@@ -1,6 +1,35 @@
 """Graph analysis: god nodes (most connected), surprising connections (cross-community), suggested questions."""
 from __future__ import annotations
+from pathlib import Path
 import networkx as nx
+
+from graphify.build import edge_data
+
+# Language families — extensions sharing a runtime can legitimately call each other
+_LANG_FAMILY: dict[str, str] = {
+    **{e: "python" for e in (".py", ".pyw")},
+    **{e: "js" for e in (".js", ".jsx", ".mjs", ".ejs", ".ts", ".tsx", ".vue", ".svelte")},
+    **{e: "go" for e in (".go",)},
+    **{e: "rust" for e in (".rs",)},
+    **{e: "jvm" for e in (".java", ".kt", ".kts", ".scala")},
+    **{e: "c" for e in (".c", ".h", ".cpp", ".cc", ".cxx", ".hpp")},
+    **{e: "ruby" for e in (".rb",)},
+    **{e: "swift" for e in (".swift",)},
+    **{e: "dotnet" for e in (".cs",)},
+    **{e: "php" for e in (".php",)},
+    **{e: "r" for e in (".r",)},
+}
+
+
+def _cross_language(src_a: str, src_b: str) -> bool:
+    """Return True if two source files belong to different language families."""
+    ext_a = Path(src_a).suffix.lower()
+    ext_b = Path(src_b).suffix.lower()
+    fam_a = _LANG_FAMILY.get(ext_a)
+    fam_b = _LANG_FAMILY.get(ext_b)
+    if fam_a is None or fam_b is None:
+        return False
+    return fam_a != fam_b
 
 
 def _node_community_map(communities: dict[int, list[str]]) -> dict[str, int]:
@@ -51,7 +80,7 @@ def god_nodes(G: nx.Graph, top_n: int = 10) -> list[dict]:
         result.append({
             "id": node_id,
             "label": G.nodes[node_id].get("label", node_id),
-            "edges": deg,
+            "degree": deg,
         })
         if len(result) >= top_n:
             break
@@ -143,7 +172,13 @@ def _surprise_score(
 
     # 1. Confidence weight - uncertain connections are more noteworthy
     conf = data.get("confidence", "EXTRACTED")
+    relation = data.get("relation", "")
     conf_bonus = {"AMBIGUOUS": 3, "INFERRED": 2, "EXTRACTED": 1}.get(conf, 1)
+
+    # Cross-language INFERRED calls are likely resolver pollution, not real surprises
+    if conf == "INFERRED" and relation == "calls" and _cross_language(u_source, v_source):
+        conf_bonus = 0  # downgrade: don't promote likely false positives
+
     score += conf_bonus
     if conf in ("AMBIGUOUS", "INFERRED"):
         reasons.append(f"{conf.lower()} connection - not explicitly stated in source")
@@ -218,7 +253,11 @@ def _cross_file_surprises(G: nx.Graph, communities: dict[int, list[str]], top_n:
 
         score, reasons = _surprise_score(G, u, v, data, node_community, u_source, v_source)
         src_id = data.get("_src", u)
+        if src_id not in G.nodes:
+            src_id = u
         tgt_id = data.get("_tgt", v)
+        if tgt_id not in G.nodes:
+            tgt_id = v
         candidates.append({
             "_score": score,
             "source": G.nodes[src_id].get("label", src_id),
@@ -258,11 +297,13 @@ def _cross_community_surprises(
         # No community info - use edge betweenness centrality
         if G.number_of_edges() == 0:
             return []
+        if G.number_of_nodes() > 5000:
+            return []
         betweenness = nx.edge_betweenness_centrality(G)
         top_edges = sorted(betweenness.items(), key=lambda x: x[1], reverse=True)[:top_n]
         result = []
         for (u, v), score in top_edges:
-            data = G.edges[u, v]
+            data = edge_data(G, u, v)
             result.append({
                 "source": G.nodes[u].get("label", u),
                 "target": G.nodes[v].get("label", v),
@@ -294,7 +335,11 @@ def _cross_community_surprises(
         # This edge crosses community boundaries - interesting
         confidence = data.get("confidence", "EXTRACTED")
         src_id = data.get("_src", u)
+        if src_id not in G.nodes:
+            src_id = u
         tgt_id = data.get("_tgt", v)
+        if tgt_id not in G.nodes:
+            tgt_id = v
         surprises.append({
             "source": G.nodes[src_id].get("label", src_id),
             "target": G.nodes[tgt_id].get("label", tgt_id),
@@ -352,7 +397,8 @@ def suggest_questions(
 
     # 2. Bridge nodes (high betweenness) → cross-cutting concern questions
     if G.number_of_edges() > 0:
-        betweenness = nx.betweenness_centrality(G)
+        k = min(100, G.number_of_nodes()) if G.number_of_nodes() > 1000 else None
+        betweenness = nx.betweenness_centrality(G, k=k, seed=42)
         # Top bridge nodes that are NOT file-level hubs
         bridges = sorted(
             [(n, s) for n, s in betweenness.items()
@@ -392,7 +438,11 @@ def suggest_questions(
             others = []
             for u, v, d in inferred[:2]:
                 src_id = d.get("_src", u)
+                if src_id not in G.nodes:
+                    src_id = u
                 tgt_id = d.get("_tgt", v)
+                if tgt_id not in G.nodes:
+                    tgt_id = v
                 other_id = tgt_id if src_id == node_id else src_id
                 others.append(G.nodes[other_id].get("label", other_id))
             questions.append({

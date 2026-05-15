@@ -1,5 +1,5 @@
 from pathlib import Path
-from graphify.detect import classify_file, count_words, detect, FileType, _looks_like_paper, _is_ignored, _load_graphifyignore
+from graphify.detect import classify_file, count_words, detect, detect_incremental, save_manifest, FileType, _looks_like_paper, _is_ignored, _load_graphifyignore
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -47,11 +47,17 @@ def test_detect_warns_small_corpus():
     assert result["needs_graph"] is False
     assert result["warning"] is not None
 
-def test_detect_skips_dotfiles():
+def test_detect_skips_noise_dot_dirs():
+    """Noise dot dirs (.next, .nuxt, .graphify cache, …) are skipped (#873).
+    Non-noise dot dirs (.github, .claude, …) are now allowed through."""
     result = detect(FIXTURES)
     for files in result["files"].values():
         for f in files:
-            assert "/." not in f
+            # graphify's own cache is always skipped
+            assert "/.graphify/" not in f
+            # well-known framework caches are always skipped
+            for noise in ("/.next/", "/.nuxt/", "/.turbo/", "/.angular/"):
+                assert noise not in f
 
 
 def test_classify_md_paper_by_signals(tmp_path):
@@ -138,8 +144,27 @@ def test_detect_follows_symlinked_file(tmp_path):
     assert any("link.py" in f for f in code)
 
 
-def test_graphifyignore_discovered_from_parent(tmp_path):
-    """A .graphifyignore in a parent directory applies to subdirectory scans."""
+def test_graphifyignore_hermetic_without_vcs(tmp_path):
+    """Without a VCS root, parent .graphifyignore does NOT apply (hermetic)."""
+    (tmp_path / ".graphifyignore").write_text("vendor/\n")
+    sub = tmp_path / "packages" / "mylib"
+    sub.mkdir(parents=True)
+    (sub / "main.py").write_text("x = 1")
+    vendor = sub / "vendor"
+    vendor.mkdir()
+    (vendor / "dep.py").write_text("y = 2")
+
+    result = detect(sub)
+    code_files = result["files"]["code"]
+    assert any("main.py" in f for f in code_files)
+    # parent .graphifyignore must NOT leak into a non-VCS scan
+    assert any("vendor" in f for f in code_files)
+    assert result["graphifyignore_patterns"] == 0
+
+
+def test_graphifyignore_discovered_from_parent_in_vcs(tmp_path):
+    """Inside a VCS repo, parent .graphifyignore applies to subdirectory scans."""
+    (tmp_path / ".git").mkdir()
     (tmp_path / ".graphifyignore").write_text("vendor/\n")
     sub = tmp_path / "packages" / "mylib"
     sub.mkdir(parents=True)
@@ -201,6 +226,37 @@ def test_detect_handles_circular_symlinks(tmp_path):
     assert any("main.py" in f for f in result["files"]["code"])
 
 
+def test_detect_incremental_propagates_follow_symlinks(tmp_path, monkeypatch):
+    """detect_incremental must forward follow_symlinks so symlinked sub-trees
+    appear in incremental scans the same way they appear in full scans."""
+    monkeypatch.chdir(tmp_path)
+
+    real_dir = tmp_path / "real_corpus"
+    real_dir.mkdir()
+    (real_dir / "note.md").write_text("# real note\n\nsome content")
+    (tmp_path / "linked_corpus").symlink_to(real_dir)
+
+    # Store manifest inside graphify-out/ so it is pruned by _SKIP_DIRS
+    # and doesn't get re-detected as a code file now that .json is indexed.
+    manifest_dir = tmp_path / "graphify-out"
+    manifest_dir.mkdir()
+    manifest_path = str(manifest_dir / "manifest.json")
+
+    # Without following symlinks, the symlinked dir contents are invisible.
+    no_link = detect_incremental(tmp_path, manifest_path, follow_symlinks=False)
+    assert not any("linked_corpus" in f for f in no_link["files"]["document"])
+
+    # With follow_symlinks=True, the symlinked dir contents appear and are new.
+    yes_link = detect_incremental(tmp_path, manifest_path, follow_symlinks=True)
+    assert any("linked_corpus" in f for f in yes_link["files"]["document"])
+    assert yes_link["new_total"] >= 2  # real + linked
+
+    # After saving manifest, a second incremental scan should see no changes.
+    save_manifest(yes_link["files"], manifest_path)
+    second = detect_incremental(tmp_path, manifest_path, follow_symlinks=True)
+    assert second["new_total"] == 0
+
+
 def test_classify_video_extensions():
     """Video and audio file extensions should classify as VIDEO."""
     from graphify.detect import FileType
@@ -210,6 +266,40 @@ def test_classify_video_extensions():
     assert classify_file(Path("recording.wav")) == FileType.VIDEO
     assert classify_file(Path("webinar.webm")) == FileType.VIDEO
     assert classify_file(Path("audio.m4a")) == FileType.VIDEO
+
+
+def test_classify_google_workspace_shortcuts():
+    assert classify_file(Path("notes.gdoc")) == FileType.DOCUMENT
+    assert classify_file(Path("budget.gsheet")) == FileType.DOCUMENT
+    assert classify_file(Path("deck.gslides")) == FileType.DOCUMENT
+
+
+def test_detect_skips_google_workspace_shortcuts_by_default(tmp_path):
+    (tmp_path / "notes.gdoc").write_text('{"doc_id":"doc-1"}', encoding="utf-8")
+
+    result = detect(tmp_path)
+
+    assert not result["files"]["document"]
+    assert any("Google Workspace shortcut skipped" in item for item in result["skipped_sensitive"])
+
+
+def test_detect_converts_google_workspace_shortcuts_when_enabled(tmp_path, monkeypatch):
+    shortcut = tmp_path / "notes.gdoc"
+    shortcut.write_text('{"doc_id":"doc-1"}', encoding="utf-8")
+
+    def fake_convert(path, out_dir, *, xlsx_to_markdown=None):
+        out_dir.mkdir(parents=True, exist_ok=True)
+        out = out_dir / "notes_converted.md"
+        out.write_text("# Notes\n\nA converted Google Doc.", encoding="utf-8")
+        return out
+
+    monkeypatch.setattr("graphify.detect.convert_google_workspace_file", fake_convert)
+
+    result = detect(tmp_path, google_workspace=True)
+
+    assert len(result["files"]["document"]) == 1
+    assert result["files"]["document"][0].endswith("notes_converted.md")
+    assert result["total_words"] > 0
 
 
 def test_detect_includes_video_key(tmp_path):
@@ -236,3 +326,93 @@ def test_detect_video_not_in_words(tmp_path):
     result = detect(tmp_path)
     # Only video file present — total_words should be 0
     assert result["total_words"] == 0
+
+
+def test_detect_skips_coverage_dir(tmp_path):
+    """coverage/ and lcov-report/ are noise dirs — HTML reports inside must be excluded (#870)."""
+    cov = tmp_path / "coverage" / "lcov-report"
+    cov.mkdir(parents=True)
+    (cov / "index.html").write_text("<html>coverage report</html>")
+    (cov / "src.ts.html").write_text("<html>file coverage</html>")
+    (tmp_path / "main.py").write_text("def hello(): pass")
+    result = detect(tmp_path)
+    all_files = [f for files in result["files"].values() for f in files]
+    cov_prefix = str(tmp_path / "coverage")
+    assert not any(f.startswith(cov_prefix) for f in all_files)
+    assert any("main.py" in f for f in all_files)
+
+
+def test_detect_skips_visual_tests_dir(tmp_path):
+    """visual-tests/ bundles and snapshots are noise — must be excluded (#869)."""
+    vt = tmp_path / "visual-tests"
+    vt.mkdir()
+    (vt / "bundle.js").write_text("var u3=function(){};var d2=function(){}")
+    (vt / "screens.tsx").write_text("export const Screen = () => <div/>")
+    (tmp_path / "app.py").write_text("def main(): pass")
+    result = detect(tmp_path)
+    all_files = [f for files in result["files"].values() for f in files]
+    assert not any("visual-tests" in f for f in all_files)
+    assert any("app.py" in f for f in all_files)
+
+
+def test_detect_skips_snapshots_dir(tmp_path):
+    """__snapshots__/ and snapshots/ are jest/vitest artefacts — must be excluded."""
+    (tmp_path / "__snapshots__").mkdir()
+    (tmp_path / "__snapshots__" / "app.test.ts.snap").write_text("// Jest Snapshot\nexports[`test 1`] = `<div/>`")
+    (tmp_path / "app.ts").write_text("export function greet() { return 'hi'; }")
+    result = detect(tmp_path)
+    all_files = [f for files in result["files"].values() for f in files]
+    assert not any("__snapshots__" in f for f in all_files)
+    assert any("app.ts" in f for f in all_files)
+
+
+def test_detect_skips_storybook_static_dir(tmp_path):
+    """storybook-static/ is a build artefact — must be excluded."""
+    sb = tmp_path / "storybook-static"
+    sb.mkdir()
+    (sb / "index.html").write_text("<html>storybook</html>")
+    (sb / "main.js").write_text("(function(){var s=1;})()")
+    (tmp_path / "Button.tsx").write_text("export const Button = () => <button/>")
+    result = detect(tmp_path)
+    all_files = [f for files in result["files"].values() for f in files]
+    assert not any("storybook-static" in f for f in all_files)
+    assert any("Button.tsx" in f for f in all_files)
+
+
+# --- #873: dot dirs allowed, framework caches blocked ---
+
+def test_detect_allows_github_dir(tmp_path):
+    """Files inside .github/ (workflows etc.) are now indexed (#873)."""
+    gh = tmp_path / ".github" / "workflows"
+    gh.mkdir(parents=True)
+    (gh / "ci.yml").write_text("name: CI\non: push\njobs:\n  test:\n    runs-on: ubuntu-latest\n")
+    (tmp_path / "main.py").write_text("def run(): pass")
+    result = detect(tmp_path)
+    all_files = [f for files in result["files"].values() for f in files]
+    assert any(".github" in f for f in all_files), "expected .github/workflows/ci.yml to be detected"
+
+
+def test_detect_skips_next_cache(tmp_path):
+    """.next/ (Next.js build cache) must be excluded even after dot-dir fix (#873)."""
+    next_dir = tmp_path / ".next" / "cache"
+    next_dir.mkdir(parents=True)
+    (next_dir / "build.js").write_text("(function(){var s=1;})()")
+    pages = tmp_path / "pages"
+    pages.mkdir()
+    (pages / "index.tsx").write_text("export default function Home() { return <div/> }")
+    result = detect(tmp_path)
+    all_files = [f for files in result["files"].values() for f in files]
+    assert not any(".next" in f for f in all_files)
+    assert any("index.tsx" in f for f in all_files)
+
+
+def test_detect_skips_graphify_own_cache(tmp_path):
+    """.graphify/ (extraction cache) must never be re-indexed as source (#873)."""
+    cache = tmp_path / ".graphify" / "cache"
+    cache.mkdir(parents=True)
+    (cache / "abc123.json").write_text('{"nodes": [], "edges": []}')
+    (tmp_path / "app.py").write_text("def go(): pass")
+    result = detect(tmp_path)
+    all_files = [f for files in result["files"].values() for f in files]
+    assert not any(".graphify" in f for f in all_files)
+    assert any("app.py" in f for f in all_files)

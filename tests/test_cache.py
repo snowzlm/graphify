@@ -62,16 +62,18 @@ def test_cached_files(tmp_path, cache_root):
     save_cached(f2, {"nodes": [], "edges": []}, root=cache_root)
 
     hashes = cached_files(cache_root)
-    assert file_hash(f1) in hashes
-    assert file_hash(f2) in hashes
+    assert file_hash(f1, cache_root) in hashes
+    assert file_hash(f2, cache_root) in hashes
 
 
 def test_clear_cache(tmp_file, cache_root):
-    """clear_cache removes all .json files from graphify-out/cache/."""
+    """clear_cache removes all .json files from graphify-out/cache/ (all subdirs)."""
     save_cached(tmp_file, {"nodes": [], "edges": []}, root=cache_root)
-    assert len(list((cache_root / "graphify-out" / "cache").glob("*.json"))) > 0
+    # Since v0.5.3 entries go into cache/ast/, not the flat cache/ dir
+    cache_base = cache_root / "graphify-out" / "cache"
+    assert len(list(cache_base.rglob("*.json"))) > 0
     clear_cache(cache_root)
-    assert len(list((cache_root / "graphify-out" / "cache").glob("*.json"))) == 0
+    assert len(list(cache_base.rglob("*.json"))) == 0
 
 
 def test_md_frontmatter_only_change_same_hash(tmp_path):

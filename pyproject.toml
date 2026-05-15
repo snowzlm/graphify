@@ -4,14 +4,16 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "graphifyy"
-version = "0.4.1"
-description = "AI coding assistant skill (Claude Code, Codex, OpenCode, Cursor, OpenClaw, Factory Droid, Trae) - turn any folder of code, docs, papers, images, or videos into a queryable knowledge graph"
+version = "0.8.2"
+description = "AI coding assistant skill (Claude Code, Codex, OpenCode, Cursor, Gemini CLI, Aider, OpenClaw, Factory Droid, Trae, Hermes, Kiro, Pi, Google Antigravity) - turn any folder of code, docs, papers, images, or videos into a queryable knowledge graph"
 readme = "README.md"
 license = { file = "LICENSE" }
-keywords = ["claude", "claude-code", "codex", "opencode", "cursor", "knowledge-graph", "rag", "graphrag", "obsidian", "community-detection", "tree-sitter", "leiden", "llm"]
+keywords = ["claude", "claude-code", "codex", "opencode", "cursor", "gemini", "aider", "kiro", "pi", "knowledge-graph", "rag", "graphrag", "obsidian", "community-detection", "tree-sitter", "leiden", "llm"]
 requires-python = ">=3.10"
 dependencies = [
     "networkx",
+    "datasketch",
+    "rapidfuzz",
     "tree-sitter>=0.23.0",
     "tree-sitter-python",
     "tree-sitter-javascript",
@@ -19,6 +21,7 @@ dependencies = [
     "tree-sitter-go",
     "tree-sitter-rust",
     "tree-sitter-java",
+    "tree-sitter-groovy",
     "tree-sitter-c",
     "tree-sitter-cpp",
     "tree-sitter-ruby",
@@ -33,6 +36,10 @@ dependencies = [
     "tree-sitter-elixir",
     "tree-sitter-objc",
     "tree-sitter-julia",
+    "tree-sitter-verilog",
+    "tree-sitter-fortran",
+    "tree-sitter-bash",
+    "tree-sitter-json",
 ]
 
 [project.urls]
@@ -43,19 +50,35 @@ Issues = "https://github.com/safishamsi/graphify/issues"
 [project.optional-dependencies]
 mcp = ["mcp"]
 neo4j = ["neo4j"]
-pdf = ["pypdf", "html2text"]
+pdf = ["pypdf", "markdownify"]
 watch = ["watchdog"]
-leiden = ["graspologic"]
+svg = ["matplotlib"]
+leiden = ["graspologic; python_version < '3.13'"]
 office = ["python-docx", "openpyxl"]
+google = ["openpyxl"]
 video = ["faster-whisper", "yt-dlp"]
-all = ["mcp", "neo4j", "pypdf", "html2text", "watchdog", "graspologic", "python-docx", "openpyxl", "faster-whisper", "yt-dlp"]
+kimi = ["openai", "tiktoken"]
+ollama = ["openai"]
+bedrock = ["boto3"]
+gemini = ["openai", "tiktoken"]
+openai = ["openai", "tiktoken"]
+sql = ["tree-sitter-sql"]
+all = ["mcp", "neo4j", "pypdf", "markdownify", "watchdog", "graspologic; python_version < '3.13'", "python-docx", "openpyxl", "faster-whisper", "yt-dlp", "matplotlib", "openai", "tiktoken", "boto3", "tree-sitter-sql"]
 
 [project.scripts]
 graphify = "graphify.__main__:main"
 
-[tool.setuptools.packages.find]
-where = ["."]
-include = ["graphify*"]
+[tool.uv]
+# Install via: uv tool install graphifyy
+# Run without installing: uvx graphifyy install
+package = true
+
+[tool.setuptools]
+packages = ["graphify"]
+include-package-data = false
 
 [tool.setuptools.package-data]
-graphify = ["skill.md", "skill-codex.md", "skill-opencode.md", "skill-aider.md", "skill-copilot.md", "skill-claw.md", "skill-windows.md", "skill-droid.md", "skill-trae.md"]
+graphify = ["skill.md", "skill-codex.md", "skill-opencode.md", "skill-aider.md", "skill-copilot.md", "skill-claw.md", "skill-windows.md", "skill-droid.md", "skill-trae.md", "skill-kiro.md", "skill-vscode.md", "skill-pi.md"]
+
+[tool.bandit]
+skips = ["B404"]
