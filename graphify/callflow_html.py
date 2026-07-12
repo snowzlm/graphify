@@ -30,6 +30,8 @@ from collections import Counter, defaultdict
 from datetime import datetime, timezone
 from html import escape
 
+from graphify.paths import GRAPHIFY_OUT, GRAPHIFY_OUT_NAME
+
 
 # ──────────────────────────────────────────────
 # 1. CSS template (fixed, project-agnostic)
@@ -252,6 +254,12 @@ def _node_link_payload(data: dict) -> tuple[list, list] | None:
 
 def load_graph(path: str | Path) -> tuple:
     """Load graph.json. Returns normalized (nodes, edges, hyperedges, metadata)."""
+    if path:
+        from graphify.security import check_graph_file_size_cap
+        try:
+            check_graph_file_size_cap(Path(path))
+        except ValueError as exc:
+            raise SystemExit(f"ERROR: {exc}") from exc
     data = read_json(path)
     if not isinstance(data, dict):
         raise SystemExit(f"ERROR: graph file must contain a JSON object: {path}")
@@ -355,7 +363,7 @@ def html_comment_text(text: str) -> str:
 def stable_ascii_id(raw: str, prefix: str = "node", limit: int = 48) -> str:
     """Build a Mermaid-safe ASCII identifier with a hash suffix to avoid collisions."""
     raw = str(raw or "")
-    digest = hashlib.sha1(raw.encode("utf-8")).hexdigest()[:8]
+    digest = hashlib.sha1(raw.encode("utf-8"), usedforsecurity=False).hexdigest()[:8]
     slug = re.sub(r"[^A-Za-z0-9_]+", "_", raw)
     slug = re.sub(r"_+", "_", slug).strip("_")
     if not slug:
@@ -398,7 +406,7 @@ def infer_project_name(graph_path: str, meta: dict) -> str:
     if meta.get("project_name"):
         return meta["project_name"]
     path = Path(graph_path).resolve()
-    if path.parent.name == "graphify-out" and len(path.parents) > 1:
+    if path.parent.name == GRAPHIFY_OUT_NAME and len(path.parents) > 1:
         return path.parents[1].name
     return path.parent.name or "Project"
 
@@ -413,9 +421,9 @@ def resolve_graphify_paths(args) -> dict:
     elif (base / "graph.json").exists():
         graphify_out = base
     else:
-        graphify_out = base / "graphify-out"
+        graphify_out = base / GRAPHIFY_OUT
 
-    project_root = graphify_out.parent if graphify_out.name == "graphify-out" else base
+    project_root = graphify_out.parent if graphify_out.name == GRAPHIFY_OUT_NAME else base
     graph = Path(args.graph).expanduser() if args.graph else graphify_out / "graph.json"
     report = Path(args.report).expanduser() if args.report else graphify_out / "GRAPH_REPORT.md"
     labels = Path(args.labels).expanduser() if args.labels else graphify_out / ".graphify_labels.json"
@@ -646,7 +654,7 @@ def html_anchor_id(raw: str, fallback: str, used: set) -> str:
     base = base[:48].strip("-") or "section"
     candidate = base
     if candidate in used:
-        candidate = f"{base}-{hashlib.sha1(raw.encode('utf-8')).hexdigest()[:6]}"
+        candidate = f"{base}-{hashlib.sha1(raw.encode('utf-8'), usedforsecurity=False).hexdigest()[:6]}"
     suffix = 2
     while candidate in used:
         candidate = f"{base}-{suffix}"

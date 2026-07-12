@@ -7,6 +7,8 @@ graphify processes your files in three passes:
 **Pass 1 — Code structure (free, no API calls)**
 Tree-sitter parses your code files and extracts classes, functions, imports, call graphs, and inline comments. This runs locally with no LLM involved. 25 languages supported. SQL files get special treatment: tables, views, foreign keys, and JOIN relationships are extracted deterministically.
 
+Code files are not sent to the LLM semantic extractor in the normal pipeline. If a corpus contains only code files, Pass 3 is skipped entirely; semantic extraction is reserved for docs, papers, images, and transcripts.
+
 **Pass 2 — Video and audio (local, no API calls)**
 Video and audio files are transcribed with faster-whisper. To focus the transcript on your domain, the transcription prompt is seeded with your top god nodes (the most-connected concepts in your code graph so far). Transcripts are cached — re-runs skip already-processed files.
 
@@ -85,6 +87,9 @@ The output `graph.json` uses NetworkX's node-link format. Each node has:
 - `label` — human-readable name
 - `file_type` — `code`, `document`, `paper`, `image`, `rationale`
 - `source_file` — where it came from
+
+See [RFC: file-level node summaries](node-summaries-rfc.md) for two proposed
+ways to add compact optional summaries for AI navigation.
 
 Each edge has:
 - `source`, `target` — node IDs
